@@ -5,6 +5,12 @@ This repository contains Blender Python scripts for generating organic, parametr
 <img width="393" height="153" alt="image" src="https://github.com/user-attachments/assets/aaeb6f8a-73c4-420c-9dc0-83450ba31a1a" />
 <img width="528" height="456" alt="image" src="https://github.com/user-attachments/assets/587386b6-5272-45f7-8f87-d4aa4e0609e2" />
 
+
+https://github.com/user-attachments/assets/2f1f4786-20be-45de-b442-2f7b21bf694b
+
+<img width="692" height="455" alt="image" src="https://github.com/user-attachments/assets/12f16181-5907-4958-bf4f-30bbc5d01612" />
+
+
 -----
 
 ## Physalis (Chinese Lantern) Generator
