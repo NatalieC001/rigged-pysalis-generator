@@ -1,0 +1,137 @@
+import bpy
+import bmesh
+import math
+
+# Global Configuration
+NUM_PETALS = 10
+
+def create_physalis_fixed_tips(height=100.0, base_width=50.0, thickness=0.4, resolution=80, arch_max=15.0):
+    # 1. Cleanup
+    for name in ["Physalis_Net", "Physalis_Arm"]:
+        if name in bpy.data.objects:
+            bpy.data.objects.remove(bpy.data.objects[name], do_unlink=True)
+
+    # 2. Setup Objects
+    arm_data = bpy.data.armatures.new("PhysalisArmData")
+    arm_obj = bpy.data.objects.new("Physalis_Arm", arm_data)
+    bpy.context.collection.objects.link(arm_obj)
+    
+    mesh_data = bpy.data.meshes.new("PhysalisMesh")
+    mesh_obj = bpy.data.objects.new("Physalis_Net", mesh_data)
+    bpy.context.collection.objects.link(mesh_obj)
+    
+    bm = bmesh.new()
+    seg_len = height / resolution
+    trans_res = 12
+
+    def get_pos(angle, dist):
+        corrected_angle = angle + math.pi / 2
+        return (math.cos(corrected_angle) * dist, math.sin(corrected_angle) * dist, 0)
+
+    # 3. Bone Chains
+    for p in range(NUM_PETALS):
+        angle = (p * 2 * math.pi / NUM_PETALS)
+        for s in range(resolution):
+            mesh_obj.vertex_groups.new(name=f"P{p}_B{s}")
+
+        bpy.context.view_layer.objects.active = arm_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+        prev_bone = None
+        for s in range(resolution):
+            bone = arm_data.edit_bones.new(f"P{p}_B{s}")
+            bone.head = get_pos(angle, s * seg_len)
+            bone.tail = get_pos(angle, (s + 1) * seg_len)
+            if prev_bone:
+                bone.parent = prev_bone
+                bone.use_connect = True
+            prev_bone = bone
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # 4. Mesh Generation
+    center_v = bm.verts.new((0, 0, 0))
+
+    for p in range(NUM_PETALS):
+        angle = (p * 2 * math.pi / NUM_PETALS)
+        prev_row = [center_v] * (trans_res + 1)
+        
+        for s in range(1, resolution + 1):
+            h = s * seg_len
+            w_max = (base_width / 2) * math.sin(math.pi * s / resolution)
+            center_pos = get_pos(angle, h)
+            
+            current_row = []
+            for t in range(trans_res + 1):
+                t_fac = (t / trans_res) * 2 - 1
+                local_w = t_fac * w_max
+                w_vec = (math.cos(angle) * local_w, math.sin(angle) * local_w, 0)
+                pos = (center_pos[0] + w_vec[0], center_pos[1] + w_vec[1], 0)
+                current_row.append(bm.verts.new(pos))
+            
+            for t in range(trans_res):
+                v1, v2, v3, v4 = prev_row[t], prev_row[t+1], current_row[t+1], current_row[t]
+                unique = list(dict.fromkeys([v1, v2, v3, v4]))
+                if len(unique) >= 3:
+                    bm.faces.new(unique[:4])
+            prev_row = current_row
+
+    bm.to_mesh(mesh_data)
+    bm.free()
+
+    # 5. Weighting & Shape Keys
+    mesh_obj.shape_key_add(name="Basis")
+    sk_width = mesh_obj.shape_key_add(name="Width_Adjust")
+    sk_arch = mesh_obj.shape_key_add(name="Arch_Adjust")
+    sk_arch.slider_min, sk_arch.slider_max = -1.0, 1.0
+
+    for i, v in enumerate(mesh_data.vertices):
+        r = v.co.length
+        
+        if r < 0.001:
+            for p in range(NUM_PETALS):
+                mesh_obj.vertex_groups[f"P{p}_B0"].add([v.index], 1.0/NUM_PETALS, 'REPLACE')
+            continue
+
+        v_angle = (math.atan2(v.co.y, v.co.x) - math.pi/2) % (2 * math.pi)
+        p_idx = round(v_angle / (2 * math.pi / NUM_PETALS)) % NUM_PETALS
+        s_idx = min(max(0, int(r / seg_len)), resolution - 1)
+        
+        mesh_obj.vertex_groups[f"P{p_idx}_B{s_idx}"].add([v.index], 1.0, 'REPLACE')
+        
+        p_angle = p_idx * (2 * math.pi / NUM_PETALS)
+        spine_dir = get_pos(p_angle, r)
+        
+        sk_width.data[i].co.x -= (v.co.x - spine_dir[0]) * 0.5
+        sk_width.data[i].co.y -= (v.co.y - spine_dir[1]) * 0.5
+        
+        dist_spine = math.sqrt((v.co.x - spine_dir[0])**2 + (v.co.y - spine_dir[1])**2)
+        petal_w = (base_width / 2) * math.sin(math.pi * r / height)
+        if petal_w > 0.1:
+            t_f = dist_spine / petal_w
+            z_v = (1.0 - (t_f**2)) * arch_max * math.sin(math.pi * r / height)
+            sk_arch.data[i].co.z += z_v
+
+    # 6. Sliders & Drivers
+    arm_obj["Fold_Slider"] = 0.0
+    arm_obj["Width_Adjust"] = 0.0
+    arm_obj["Arch_Depth"] = 0.0
+    
+    for pb in arm_obj.pose.bones:
+        pb.rotation_mode = 'XYZ'
+        d = pb.driver_add("rotation_euler", 0).driver
+        v_var = d.variables.new()
+        v_var.name, v_var.type = "f", 'SINGLE_PROP'
+        v_var.targets[0].id, v_var.targets[0].data_path = arm_obj, '["Fold_Slider"]'
+        d.expression = f"f / {resolution}"
+        
+    for sk_n, pr_n in [("Width_Adjust", '["Width_Adjust"]'), ("Arch_Adjust", '["Arch_Depth"]')]:
+        sk_d = mesh_obj.data.shape_keys.key_blocks[sk_n].driver_add("value").driver
+        v_d = sk_d.variables.new()
+        v_d.name, v_d.type = "val", 'SINGLE_PROP'
+        v_d.targets[0].id, v_d.targets[0].data_path = arm_obj, pr_n
+        sk_d.expression = "val"
+
+    mesh_obj.parent = arm_obj
+    mesh_obj.modifiers.new(name="Armature", type='ARMATURE').object = arm_obj
+    mesh_obj.modifiers.new(name="Thickness", type='SOLIDIFY').thickness = thickness
+
+create_physalis_fixed_tips()
